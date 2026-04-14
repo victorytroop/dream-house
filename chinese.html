@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Santiago's Dream House</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: Arial, sans-serif; }
+        #menu {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8); color: white; padding: 40px;
+            border: 1px solid #555; text-align: center; z-index: 100;
+        }
+        button { display: block; width: 160px; padding: 8px; margin: 10px auto; cursor: pointer; border: 1px solid #000; font-size: 14px; background: #fff; }
+        #status { position: fixed; bottom: 10px; width: 100%; text-align: center; color: lime; font-size: 12px; }
+    </style>
+</head>
+<body>
+
+    <div id="menu">
+        <h1>戴胜广的梦想家</h1>
+        <button onclick="startGame('physics')">WALK</button>
+        <button onclick="startGame('fly')">FLY</button>
+    </div>
+
+    <div id="status">INITIALIZING...</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+        let scene, camera, renderer, house, dog, mixer;
+        let moveMode = 'physics', currentFloorY = 0, walkingHeight = 2.0, moveSpeed = 15.0;
+        const clock = new THREE.Clock(), rotation = { x: 0, y: 0 }, raycaster = new THREE.Raycaster();
+        const move = { forward: false, backward: false, left: false, right: false, up: false, down: false };
+
+        window.startGame = (mode) => {
+            moveMode = mode;
+            document.getElementById('menu').style.display = 'none';
+            document.body.requestPointerLock();
+        };
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 5000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+            const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+            sun.position.set(50, 100, 50);
+            scene.add(sun);
+
+            const groundMat = new THREE.MeshPhongMaterial({ color: 0x00ff00 }); 
+            new THREE.TextureLoader().load('grass.jpg', (tex) => {
+                tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+                tex.repeat.set(150, 150);
+                groundMat.map = tex;
+                groundMat.needsUpdate = true;
+            });
+            const ground = new THREE.Mesh(new THREE.PlaneGeometry(10000, 10000), groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+
+            const dracoLoader = new DRACOLoader();
+            dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+            const loader = new GLTFLoader();
+            loader.setDRACOLoader(dracoLoader);
+
+            document.getElementById('status').innerText = "LOADING...";
+
+            loader.load('house.glb', (gltf) => {
+                house = gltf.scene;
+                scene.add(house);
+                
+                const box = new THREE.Box3().setFromObject(house);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+
+                walkingHeight = size.y * 0.25; 
+                moveSpeed = size.x * 0.3; 
+                camera.position.set(center.x, walkingHeight, center.z + (size.z * 1.5));
+                camera.lookAt(center);
+                
+                loader.load('dog.glb', (dgltf) => {
+                    dog = dgltf.scene;
+                    dog.position.set(camera.position.x, 0, camera.position.z - 10);
+                    dog.scale.setScalar(walkingHeight * 0.4);
+                    scene.add(dog);
+                    if (dgltf.animations.length > 0) {
+                        mixer = new THREE.AnimationMixer(dog);
+                        mixer.clipAction(dgltf.animations[0]).play();
+                    }
+                }, undefined, () => console.log("Dog missing"));
+
+                document.getElementById('status').style.display = 'none';
+            }, undefined, (err) => {
+                document.getElementById('status').innerText = "ERROR LOADING HOUSE";
+            });
+
+            animate();
+        }
+
+        const onKey = (v) => (e) => {
+            if(e.code==='KeyW') move.forward=v; if(e.code==='KeyS') move.backward=v;
+            if(e.code==='KeyA') move.left=v; if(e.code==='KeyD') move.right=v;
+            if(e.code==='KeyR') move.up=v; if(e.code==='KeyF') move.down=v;
+        };
+        window.addEventListener('keydown', onKey(true));
+        window.addEventListener('keyup', onKey(false));
+        window.addEventListener('mousemove', (e) => {
+            if (document.pointerLockElement) {
+                rotation.y -= e.movementX * 0.002;
+                rotation.x -= e.movementY * 0.002;
+                rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotation.x));
+            }
+        });
+
+        function handleMovement(delta) {
+            const dir = new THREE.Vector3();
+            const f = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+            const s = new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);
+
+            if(moveMode === 'physics') { f.y = 0; s.y = 0; f.normalize(); s.normalize(); }
+            if(move.forward) dir.add(f); if(move.backward) dir.sub(f);
+            if(move.left) dir.sub(s); if(move.right) dir.add(s);
+            if(moveMode === 'fly') { if(move.up) dir.y+=1; if(move.down) dir.y-=1; }
+
+            if (dir.length() > 0) {
+                const dist = moveSpeed * delta;
+                const nextPos = camera.position.clone().add(dir.normalize().multiplyScalar(dist));
+
+                if (moveMode === 'physics' && house) {
+                    const waistY = currentFloorY + (walkingHeight * 0.5);
+                    
+                    // Wall check
+                    raycaster.set(new THREE.Vector3(camera.position.x, waistY, camera.position.z), dir);
+                    const wallHits = raycaster.intersectObject(house, true);
+                    let blocked = (wallHits.length > 0 && wallHits[0].distance < (walkingHeight * 0.3));
+
+                    // Floor check (Shooting from waist down to avoid ceiling teleport)
+                    const floorRayOrigin = new THREE.Vector3(nextPos.x, waistY, nextPos.z);
+                    raycaster.set(floorRayOrigin, new THREE.Vector3(0, -1, 0));
+                    const floorHits = raycaster.intersectObject(house, true);
+
+                    let floorY = 0;
+                    if (floorHits.length > 0) floorY = floorHits[0].point.y;
+
+                    const stepDiff = floorY - currentFloorY;
+                    const maxStep = walkingHeight * 0.3;
+
+                    if (!blocked || (stepDiff > 0 && stepDiff < maxStep)) {
+                        camera.position.x = nextPos.x;
+                        camera.position.z = nextPos.z;
+                        currentFloorY = floorY;
+                    }
+                } else {
+                    camera.position.copy(nextPos);
+                }
+            }
+            if(moveMode === 'physics') camera.position.y = currentFloorY + walkingHeight;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if (mixer) mixer.update(delta);
+            camera.quaternion.setFromEuler(new THREE.Euler(rotation.x, rotation.y, 0, 'YXZ'));
+            handleMovement(delta);
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
